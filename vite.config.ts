@@ -1,0 +1,19 @@
+import { resolve } from 'path';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    browser: {
+      enabled: true,
+      name: 'chrome', // browser name is required
+      headless: true,
+    },
+  },
+  build: {
+    sourcemap: true,
+    lib: {
+      entry: resolve(__dirname, 'lib/index.ts'),
+      name: '@pencil/asset-cache',
+    },
+  },
+});
