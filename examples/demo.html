@@ -2,141 +2,170 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Storage Manager Test</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <title>OPFS Cache Tester</title>
     <style>
-      .progress-bar {
-        width: 100%;
-        height: 20px;
-        background: #eee;
-        border-radius: 10px;
-        overflow: hidden;
-        margin: 10px 0;
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        padding: 20px;
+        max-width: 1200px;
+        margin: 0 auto;
       }
 
-      .progress-fill {
-        height: 100%;
-        background: #4caf50;
-        width: 0%;
-        transition: width 0.3s ease;
+      .panel {
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        padding: 20px;
+        margin-bottom: 20px;
       }
 
-      .notification {
+      .controls {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        background: #4CAF50;
+        color: white;
+        cursor: pointer;
+        transition: background 0.3s;
+      }
+
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+
+      button:hover:not(:disabled) {
+        background: #45a049;
+      }
+
+      .danger {
+        background: #f44336;
+      }
+
+      .danger:hover:not(:disabled) {
+        background: #d32f2f;
+      }
+
+      #notification {
         position: fixed;
         bottom: 20px;
         right: 20px;
         padding: 15px;
-        background: #4caf50;
+        border-radius: 4px;
         color: white;
-        border-radius: 5px;
         display: none;
         animation: slideIn 0.3s ease;
       }
 
-      .file-drop-zone {
-        width: 100%;
-        height: 150px;
+      @keyframes slideIn {
+        from { transform: translateX(100%); }
+        to { transform: translateX(0); }
+      }
+
+      #fileDropZone {
         border: 2px dashed #ccc;
         border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        padding: 30px;
+        text-align: center;
         cursor: pointer;
-        transition: all 0.3s ease;
-        margin: 10px 0;
+        transition: all 0.3s;
+        margin: 20px 0;
       }
 
-      .file-drop-zone:hover:not(.disabled) {
+      #fileDropZone.drag-active {
         border-color: #4CAF50;
-        background-color: rgba(76, 175, 80, 0.05);
+        background: rgba(76, 175, 80, 0.1);
       }
 
-      .file-drop-zone.drag-active {
-        border-color: #4CAF50;
-        background-color: rgba(76, 175, 80, 0.1);
-      }
-
-      .file-drop-zone.disabled {
+      #fileDropZone.disabled {
         opacity: 0.5;
         cursor: not-allowed;
-        pointer-events: none;
       }
 
-      .drop-zone-text {
-        text-align: center;
+      #fileTree {
+        margin-top: 20px;
+      }
+
+      .tree-item {
+        padding: 5px;
+        margin: 2px 0;
+        border-radius: 4px;
+      }
+
+      .tree-item:hover {
+        background: #f5f5f5;
+      }
+
+      .tree-contents {
+        margin-left: 20px;
+        border-left: 1px solid #eee;
+        padding-left: 10px;
+      }
+
+      .file-info {
         color: #666;
-      }
-
-      .drop-zone-subtext {
         font-size: 0.9em;
-        color: #999;
-      }
-
-      @keyframes slideIn {
-        from {
-          transform: translateX(100%);
-        }
-        to {
-          transform: translateX(0);
-        }
       }
 
       #downloadQueue {
         list-style: none;
         padding: 0;
-        margin: 10px 0;
       }
 
-      #downloadQueue li {
-        margin: 5px 0;
-        padding: 10px;
+      .queue-item {
         background: #f5f5f5;
         border-radius: 4px;
+        padding: 10px;
+        margin: 5px 0;
+      }
+
+      .progress-bar {
+        height: 4px;
+        background: #eee;
+        border-radius: 2px;
+        margin-top: 5px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 2px;
+        width: 0;
+        transition: width 0.3s;
       }
     </style>
   </head>
   <body>
-    <div class="container">
-      <div class="panel full-width">
-        <h2>Storage Manager Test Interface</h2>
-        <button id="initStorage">Initialize Storage</button>
-        <button id="clearCache">Clear Cache</button>
-        <span id="storageInfo"></span>
+    <div class="panel">
+      <h1>OPFS Cache Tester</h1>
+      
+      <div class="controls">
+        <button id="initCache">Initialize Cache</button>
+        <button id="addTestAsset" disabled>Add Test Asset</button>
+        <button id="clearCache" class="danger" disabled>Clear Cache</button>
+        <button id="refreshView" disabled>Refresh View</button>
       </div>
 
-      <div class="panel">
-        <h3>Test Assets</h3>
-        <button id="addImage">Add Sample Image</button>
-        <button id="addSameImage">Add Same Image Again</button>
-        <button id="addMultiple">Add Multiple</button>
-
-        <div class="panel">
-          <h3>Local File Upload</h3>
-          <input type="file" id="fileInput">
-          <div id="fileDropZone" class="file-drop-zone disabled">
-            <div class="drop-zone-text">
-              Drag & drop files here<br>
-              <span class="drop-zone-subtext">or click to select files</span>
-            </div>
-          </div>
-        </div>
-
-        <div id="downloadQueue"></div>
-        <div id="preview"></div>
+      <div id="fileDropZone" class="disabled">
+        <p>Drag and drop files here<br>or click to select</p>
+        <input type="file" id="fileInput" multiple style="display: none">
       </div>
 
-      <div class="panel">
-        <h3>Cache Statistics</h3>
-        <canvas id="storageChart"></canvas>
-      </div>
-
-      <div class="panel full-width">
-        <h3>Cached Assets</h3>
-        <ul id="assetList" class="asset-list"></ul>
-      </div>
+      <div id="downloadQueue"></div>
     </div>
 
-    <div id="notification" class="notification"></div>
+    <div class="panel">
+      <h2>Cache Contents</h2>
+      <div id="fileTree"></div>
+    </div>
+
+    <div id="notification"></div>
 
     <script type="module" src="./demo.ts"></script>
   </body>
