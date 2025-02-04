@@ -15,7 +15,7 @@ export class StorageManager {
   private currentStorageSize: number;
   private isProcessingQueue: boolean;
 
-  private constructor(config?: Partial<CacheConfig>) {
+  constructor(config?: Partial<CacheConfig>) {
     this.adapter = new OPFSAdapter();
     this.config = {
       maxStorageSize: MAX_STORAGE_SIZE,
@@ -160,7 +160,7 @@ export class StorageManager {
   /**
    * Process the download queue
    */
-  private async processDownloadQueue(): Promise<void> {
+  async processDownloadQueue(): Promise<void> {
     if (this.isProcessingQueue || this.downloadQueue.size === 0) return;
 
     this.isProcessingQueue = true;
@@ -258,7 +258,7 @@ export class StorageManager {
   /**
    * Download asset from URL
    */
-  private async downloadAsset(url: string, metadata: AssetMetadata): Promise<ArrayBuffer> {
+  async downloadAsset(url: string, metadata: AssetMetadata): Promise<ArrayBuffer> {
     const headers: HeadersInit = {};
     if (metadata.partialContent) {
       headers['Range'] = `bytes=${metadata.partialContent.start}-${metadata.partialContent.end}`;
@@ -275,7 +275,7 @@ export class StorageManager {
   /**
    * Save asset to cache
    */
-  private async saveToCache(url: string, data: ArrayBuffer): Promise<void> {
+  async saveToCache(url: string, data: ArrayBuffer): Promise<void> {
     const metadata = this.cache.get(url);
     if (!metadata) return;
 
@@ -293,7 +293,7 @@ export class StorageManager {
   /**
    * Read asset from cache
    */
-  private async readFromCache(url: string): Promise<ArrayBuffer> {
+  async readFromCache(url: string): Promise<ArrayBuffer> {
     const metadata = this.cache.get(url);
     if (!metadata || metadata.status !== 'cached') {
       throw new Error('Asset not found in cache');
