@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: '/',
-  root: 'examples/workers',
+  root: 'examples',
   server: {
     port: 3000,
     open: '/demo.html'
@@ -14,7 +14,7 @@ export default defineConfig({
     target: 'ESNext',
     rollupOptions: {
       input: {
-        benchmark: resolve(__dirname, 'examples/workers/demo.html'),
+        benchmark: resolve(__dirname, 'examples/demo.html'),
       },
     },
     outDir: 'demo-dist/',

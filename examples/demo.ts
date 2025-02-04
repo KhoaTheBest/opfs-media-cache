@@ -1,166 +1,7 @@
-// Types for OPFS entries
-type FileTreeEntry = {
-  name: string;
-  path: string;
-  kind: 'file' | 'directory';
-  size?: number;
-  type?: string;
-  children?: FileTreeEntry[];
-};
+import { StorageManager } from '../lib/storage-manager';
+import { AssetMetadata } from '../lib/types';
 
-/**
- * OPFS Cache Manager - Singleton
- * Handles all OPFS (Origin Private File System) operations
- */
-class CacheManager {
-  private static instance: CacheManager;
-  private root: FileSystemDirectoryHandle | null = null;
-  private initialized = false;
-
-  private constructor() {}
-
-  static getInstance(): CacheManager {
-    if (!CacheManager.instance) {
-      CacheManager.instance = new CacheManager();
-    }
-    return CacheManager.instance;
-  }
-
-  async getFile(path: string): Promise<File | null> {
-    if (!this.root) return null;
-
-    try {
-      const parts = path.split('/').filter(Boolean);
-      let current = this.root;
-
-      // Navigate to the directory containing the file
-      for (let i = 0; i < parts.length - 1; i++) {
-        current = await current.getDirectoryHandle(parts[i]);
-      }
-
-      // Get the file
-      const fileHandle = await current.getFileHandle(parts[parts.length - 1]);
-      return await fileHandle.getFile();
-    } catch (err) {
-      console.error('Failed to get file:', err);
-      return null;
-    }
-  }
-
-  /**
-   * Initialize the OPFS root directory
-   */
-  async initialize(): Promise<boolean> {
-    try {
-      this.root = await navigator.storage.getDirectory();
-      this.initialized = true;
-      return true;
-    } catch (err) {
-      console.error('Failed to initialize OPFS:', err);
-      return false;
-    }
-  }
-
-  /**
-   * Check if cache is initialized
-   */
-  isInitialized(): boolean {
-    return this.initialized;
-  }
-
-  /**
-   * List all files and directories recursively
-   */
-  async listContents(dir: FileSystemDirectoryHandle = this.root!, path = ''): Promise<FileTreeEntry[]> {
-    const entries: FileTreeEntry[] = [];
-    
-    for await (const entry of dir.values()) {
-      const fullPath = path ? `${path}/${entry.name}` : entry.name;
-      
-      if (entry.kind === 'directory') {
-        const subEntries = await this.listContents(entry, fullPath);
-        entries.push({
-          name: entry.name,
-          path: fullPath,
-          kind: 'directory',
-          children: subEntries
-        });
-      } else {
-        const file = await (entry as FileSystemFileHandle).getFile();
-        entries.push({
-          name: entry.name,
-          path: fullPath,
-          kind: 'file',
-          size: file.size,
-          type: file.type
-        });
-      }
-    }
-
-    return entries;
-  }
-
-  /**
-   * Save a test asset from URL
-   */
-  async saveTestAsset(url: string): Promise<boolean> {
-    if (!this.root) return false;
-
-    try {
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const filename = url.split('/').pop() || `test-${Date.now()}`;
-
-      const fileHandle = await this.root.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-
-      return true;
-    } catch (err) {
-      console.error('Failed to save test asset:', err);
-      return false;
-    }
-  }
-
-  /**
-   * Save an uploaded file
-   */
-  async saveFile(file: File): Promise<boolean> {
-    if (!this.root) return false;
-
-    try {
-      const fileHandle = await this.root.getFileHandle(file.name, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(file);
-      await writable.close();
-
-      return true;
-    } catch (err) {
-      console.error('Failed to save file:', err);
-      return false;
-    }
-  }
-
-  /**
-   * Clear all cache contents
-   */
-  async clearCache(): Promise<boolean> {
-    if (!this.root) return false;
-
-    try {
-      for await (const entry of this.root.values()) {
-        await this.root.removeEntry(entry.name, { recursive: true });
-      }
-      return true;
-    } catch (err) {
-      console.error('Failed to clear cache:', err);
-      return false;
-    }
-  }
-}
-
-// Initialize UI elements
+// Initialize UI elements (unchanged)
 const initCacheBtn = document.getElementById('initCache') as HTMLButtonElement;
 const addTestAssetBtn = document.getElementById('addTestAsset') as HTMLButtonElement;
 const clearCacheBtn = document.getElementById('clearCache') as HTMLButtonElement;
@@ -171,14 +12,14 @@ const fileTree = document.getElementById('fileTree') as HTMLDivElement;
 const notification = document.getElementById('notification') as HTMLDivElement;
 
 // Test assets
-const TEST_IMAGE= [
+const TEST_IMAGE = [
   'https://live.staticflickr.com/65535/54059628695_1ea1ba9e15_o_d.jpg',
   'https://live.staticflickr.com/65535/54202259495_3abaa12e11_o_d.jpg',
-  'https://live.staticflickr.com/65535/53723475484_d6de5eefd1_o_d.jpg'
+  'https://live.staticflickr.com/65535/53723475484_d6de5eefd1_o_d.jpg',
 ];
 
-// Get cache manager instance
-const cacheManager = CacheManager.getInstance();
+// Get StorageManager instance
+const storageManager = StorageManager.getInstance();
 
 /**
  * Show notification message
@@ -193,47 +34,41 @@ function showNotification(message: string, isError = false): void {
   }, 3000);
 }
 
-const previewPanel = document.createElement('div');
-previewPanel.className = 'panel';
-previewPanel.innerHTML = `
-  <h2>File Preview</h2>
-  <div id="previewContent"></div>
-`;
-document.body.appendChild(previewPanel);
-
 const previewContent = document.getElementById('previewContent') as HTMLDivElement;
 
 /**
  * Preview file content based on type
  */
-async function previewFile(path: string): Promise<void> {
-  const file = await cacheManager.getFile(path);
-  if (!file) {
-    showNotification('Failed to load file', true);
+async function previewFile(url: string): Promise<void> {
+  const previewContent = document.getElementById('previewContent') as HTMLDivElement;
+
+  if (!previewContent) {
+    console.error('Preview content element not found.');
+    showNotification('Failed to preview file: Missing preview container.', true);
     return;
   }
 
-  // Clear previous preview
+  // Clear previous content
   previewContent.innerHTML = '';
 
   try {
-    if (file.type.startsWith('image/')) {
-      // Image preview
+    const { data, metadata } = await storageManager.requestAsset(url);
+
+    if (metadata.contentType?.startsWith('image/')) {
       const img = document.createElement('img');
-      img.src = URL.createObjectURL(file);
+      img.src = URL.createObjectURL(new Blob([data]));
       img.style.maxWidth = '100%';
       img.style.height = 'auto';
       previewContent.appendChild(img);
-    } else if (file.type.startsWith('video/')) {
-      // Video preview
+    } else if (metadata.contentType?.startsWith('video/')) {
       const video = document.createElement('video');
-      video.src = URL.createObjectURL(file);
+      video.src = URL.createObjectURL(new Blob([data]));
       video.controls = true;
       video.style.maxWidth = '100%';
+      video.style.height = 'auto';
       previewContent.appendChild(video);
-    } else if (file.type.startsWith('text/') || file.type === 'application/json') {
-      // Text preview
-      const text = await file.text();
+    } else if (metadata.contentType?.startsWith('text/') || metadata.contentType === 'application/json') {
+      const text = new TextDecoder().decode(data);
       const pre = document.createElement('pre');
       pre.style.whiteSpace = 'pre-wrap';
       pre.style.overflow = 'auto';
@@ -241,177 +76,173 @@ async function previewFile(path: string): Promise<void> {
       pre.textContent = text;
       previewContent.appendChild(pre);
     } else {
-      // Generic file info
-      previewContent.innerHTML = `
-        <div class="file-info">
-          <p><strong>File Name:</strong> ${file.name}</p>
-          <p><strong>Type:</strong> ${file.type || 'Unknown'}</p>
-          <p><strong>Size:</strong> ${Math.round(file.size / 1024)}KB</p>
-          <p>This file type cannot be previewed</p>
-        </div>
-      `;
+      previewContent.innerHTML = `<p>This file type cannot be previewed.</p>`;
     }
-  } catch (err) {
-    console.error('Failed to preview file:', err);
+  } catch (error) {
+    console.error('Failed to preview file:', error);
     showNotification('Failed to preview file', true);
   }
 }
 
 /**
- * Updated render file tree with clickable files
+ * Render cached files
  */
-function renderFileTree(entries: FileTreeEntry[]): string {
-  return entries.map(entry => {
-    const icon = entry.kind === 'directory' ? '📁' : '📄';
-    const size = entry.size ? ` <span class="file-info">(${Math.round(entry.size / 1024)}KB)</span>` : '';
-    
-    const itemContent = entry.kind === 'file' 
-      ? `<span class="file-name" data-path="${entry.path}" style="cursor: pointer;">${icon} ${entry.name}${size}</span>`
-      : `${icon} ${entry.name}${size}`;
-
-    return `
+function renderFileTree(entries: AssetMetadata[]): string {
+  return entries
+    .map((entry) => {
+      const icon = '📄';
+      const size = entry.size ? ` (${Math.round(entry.size / 1024)}KB)` : '';
+      return `
       <div class="tree-item">
-        ${itemContent}
-        ${entry.kind === 'directory' && entry.children?.length ? `
-          <div class="tree-contents">
-            ${renderFileTree(entry.children)}
-          </div>
-        ` : ''}
+        <span class="file-name" data-url="${entry.url}" style="cursor: pointer;">
+          ${icon} ${entry.url}${size}
+        </span>
       </div>
     `;
-  }).join('');
+    })
+    .join('');
 }
 
 // Add click handler for file names
 fileTree.addEventListener('click', async (e: Event) => {
   const target = e.target as HTMLElement;
   if (target.classList.contains('file-name')) {
-    const path = target.dataset.path;
-    if (path) {
-      await previewFile(path);
+    const url = target.dataset.url;
+    if (url) {
+      await previewFile(url);
     }
   }
 });
-
-// Add styles for preview
-const style = document.createElement('style');
-style.textContent = `
-  #previewContent {
-    padding: 15px;
-    min-height: 200px;
-    border: 1px solid #eee;
-    border-radius: 4px;
-  }
-
-  .file-name {
-    color: #2196F3;
-    text-decoration: underline;
-  }
-
-  .file-name:hover {
-    color: #1976D2;
-  }
-
-  .file-info {
-    font-family: monospace;
-    background: #f5f5f5;
-    padding: 15px;
-    border-radius: 4px;
-  }
-
-  pre {
-    background: #f5f5f5;
-    padding: 15px;
-    border-radius: 4px;
-    font-family: monospace;
-  }
-`;
-document.head.appendChild(style);
 
 /**
  * Refresh the file tree view
  */
 async function refreshView(): Promise<void> {
-  if (!cacheManager.isInitialized()) return;
+  try {
+    const cachedAssets = storageManager.getCachedAssets();
+    console.log('Cached assets:', cachedAssets);
 
-  const entries = await cacheManager.listContents();
-  fileTree.innerHTML = entries.length ? renderFileTree(entries) : '<p>No files in cache</p>';
+    fileTree.innerHTML = cachedAssets.length ? renderFileTree(cachedAssets) : '<p>No files in cache</p>';
+  } catch (error) {
+    console.error('Failed to refresh view:', error);
+    showNotification('Failed to refresh view', true);
+  }
 }
 
 // Event Handlers
 initCacheBtn.addEventListener('click', async () => {
-  const success = await cacheManager.initialize();
-  if (success) {
+  try {
+    console.log('Initializing storage...');
+    await storageManager.initialize();
     showNotification('Cache initialized successfully');
     initCacheBtn.disabled = true;
+
+    // Enable buttons after initialization
     addTestAssetBtn.disabled = false;
     clearCacheBtn.disabled = false;
     refreshViewBtn.disabled = false;
     fileDropZone.classList.remove('disabled');
+
     await refreshView();
-  } else {
+  } catch (error) {
+    console.error('Failed to initialize storage:', error);
     showNotification('Failed to initialize cache', true);
   }
 });
 
 addTestAssetBtn.addEventListener('click', async () => {
-  const url = TEST_IMAGE[Math.floor(Math.random() * TEST_IMAGE.length)];
-  const success = await cacheManager.saveTestAsset(url);
-  if (success) {
-    showNotification('Test asset saved successfully');
+  try {
+    console.log('Adding test asset...');
+    const url = TEST_IMAGE[Math.floor(Math.random() * TEST_IMAGE.length)];
+    await storageManager.requestAsset(url);
+    showNotification('Test asset cached successfully');
     await refreshView();
-  } else {
-    showNotification('Failed to save test asset', true);
+  } catch (error) {
+    console.error('Failed to add test asset:', error);
+    showNotification('Failed to add test asset', true);
   }
 });
 
 clearCacheBtn.addEventListener('click', async () => {
-  const success = await cacheManager.clearCache();
-  if (success) {
+  try {
+    console.log('Clearing cache...');
+    await storageManager.clearCache();
     showNotification('Cache cleared successfully');
     await refreshView();
-  } else {
+  } catch (error) {
+    console.error('Failed to clear cache:', error);
     showNotification('Failed to clear cache', true);
   }
 });
 
-refreshViewBtn.addEventListener('click', () => refreshView());
-
-// File upload handling
-fileDropZone.addEventListener('click', () => fileInput.click());
-
-fileInput.addEventListener('change', async (event: Event) => {
-  const files = Array.from((event.target as HTMLInputElement).files || []);
-  for (const file of files) {
-    const success = await cacheManager.saveFile(file);
-    showNotification(success ? 
-      `${file.name} uploaded successfully` : 
-      `Failed to upload ${file.name}`, !success);
-  }
+refreshViewBtn.addEventListener('click', async () => {
+  console.log('Refreshing view...');
   await refreshView();
 });
 
-// Drag and drop handling
+// File Drop Zone Event Handlers
 fileDropZone.addEventListener('dragover', (e: DragEvent) => {
   e.preventDefault();
-  fileDropZone.classList.add('drag-active');
+  e.stopPropagation();
+  if (!fileDropZone.classList.contains('disabled')) {
+    fileDropZone.classList.add('drag-active');
+  }
 });
 
-fileDropZone.addEventListener('dragleave', () => {
+fileDropZone.addEventListener('dragleave', (e: DragEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
   fileDropZone.classList.remove('drag-active');
 });
 
 fileDropZone.addEventListener('drop', async (e: DragEvent) => {
   e.preventDefault();
+  e.stopPropagation();
   fileDropZone.classList.remove('drag-active');
-  
-  const files = Array.from(e.dataTransfer?.files || []);
-  for (const file of files) {
-    const success = await cacheManager.saveFile(file);
-    showNotification(success ? 
-      `${file.name} uploaded successfully` : 
-      `Failed to upload ${file.name}`, !success);
+
+  if (fileDropZone.classList.contains('disabled')) {
+    return;
   }
-  await refreshView();
+
+  const files = e.dataTransfer?.files;
+  if (files) {
+    await handleFiles(Array.from(files));
+  }
 });
 
+// File Input Event Handler
+fileDropZone.addEventListener('click', () => {
+  if (!fileDropZone.classList.contains('disabled')) {
+    fileInput.click();
+  }
+});
+
+fileInput.addEventListener('change', async (e: Event) => {
+  const files = (e.target as HTMLInputElement).files;
+  if (files) {
+    await handleFiles(Array.from(files));
+  }
+});
+
+/**
+ * Handle uploaded files by caching them
+ * @param files Array of files to process
+ */
+async function handleFiles(files: File[]): Promise<void> {
+  for (const file of files) {
+    try {
+      const url = URL.createObjectURL(file);
+      await storageManager.requestAsset(url, {
+        contentType: file.type,
+        timestamp: Date.now(),
+        priority: 1, // Give user uploads higher priority
+      });
+      URL.revokeObjectURL(url);
+      showNotification(`File ${file.name} cached successfully`);
+    } catch (error) {
+      console.error('Failed to cache file:', error);
+      showNotification(`Failed to cache file ${file.name}`, true);
+    }
+  }
+  await refreshView();
+}

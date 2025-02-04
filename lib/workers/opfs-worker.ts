@@ -1,15 +1,21 @@
-import { FileSystemAdapter, StorageStats } from './types';
-import { PathUtils } from './utils';
+import * as Comlink from 'comlink'
+import type { FileSystemAdapter, StorageStats } from '../types';
+import { PathUtils } from '../utils';
 
 /**
- * Enhanced adapter for Origin Private File System operations
- * Implements file system operations with robust path handling
+ * Worker implementation of OPFS operations
+ * Handles file system operations in a separate thread
  */
-export class OPFSAdapter implements FileSystemAdapter {
+export class OPFSWorker implements FileSystemAdapter {
+  private initialized: boolean = false;
+
+  constructor() {
+    console.log('[Worker] OPFSWorker initializing');
+    this.initialized = true;
+  }
+
   /**
    * Get a handle to a file system entry (file or directory)
-   * @param path Path to the entry
-   * @param options Configuration options
    */
   private async getFSHandle<IsFile extends boolean, IsCreate extends boolean>(
     path: string,
@@ -18,26 +24,34 @@ export class OPFSAdapter implements FileSystemAdapter {
       isFile: IsFile;
     }
   ) {
+    console.log(`[Worker] Getting FS handle for path: ${path}, isFile: ${options.isFile}`);
+    
     const { parent, name } = PathUtils.parsePath(path);
 
     try {
       if (parent === null) {
-        return (await navigator.storage.getDirectory()) as any;
+        const root = await navigator.storage.getDirectory();
+        console.log('[Worker] Got root directory');
+        return root as any;
       }
 
       const dirPaths = parent.split('/').filter((s) => s.length > 0);
       let dirHandle = await navigator.storage.getDirectory();
 
       for (const p of dirPaths) {
+        console.log(`[Worker] Getting directory handle for: ${p}`);
         dirHandle = await dirHandle.getDirectoryHandle(p, { create: options.create });
       }
 
       if (options.isFile) {
+        console.log(`[Worker] Getting file handle for: ${name}`);
         return await dirHandle.getFileHandle(name, { create: options.create });
       } else {
+        console.log(`[Worker] Getting directory handle for: ${name}`);
         return await dirHandle.getDirectoryHandle(name, { create: options.create });
       }
     } catch (err) {
+      console.error('[Worker] Error getting FS handle:', err);
       if ((err as Error).name === 'NotFoundError') {
         return null as any;
       }
@@ -47,17 +61,18 @@ export class OPFSAdapter implements FileSystemAdapter {
 
   /**
    * Write data to a file
-   * @param path Target file path
-   * @param data Data to write
    */
   public async writeFile(path: string, data: ArrayBuffer): Promise<void> {
+    console.log(`[Worker] Writing file: ${path}`);
     const fileHandle = await this.getFSHandle(path, { create: true, isFile: true });
     const writable = await fileHandle.createWritable();
 
     try {
       await writable.write(data);
       await writable.close();
+      console.log(`[Worker] Successfully wrote file: ${path}`);
     } catch (error) {
+      console.error('[Worker] Error writing file:', error);
       await writable.abort();
       throw error;
     }
@@ -65,7 +80,6 @@ export class OPFSAdapter implements FileSystemAdapter {
 
   /**
    * Read data from a file
-   * @param path Source file path
    */
   public async readFile(path: string): Promise<ArrayBuffer> {
     const fileHandle = await this.getFSHandle(path, { create: false, isFile: true });
@@ -78,7 +92,6 @@ export class OPFSAdapter implements FileSystemAdapter {
 
   /**
    * Delete a file
-   * @param path Path to file to delete
    */
   public async deleteFile(path: string): Promise<void> {
     const { parent, name } = PathUtils.parsePath(path);
@@ -92,7 +105,6 @@ export class OPFSAdapter implements FileSystemAdapter {
 
   /**
    * Get size of a file
-   * @param path Path to file
    */
   public async getFileSize(path: string): Promise<number> {
     const fileHandle = await this.getFSHandle(path, { create: false, isFile: true });
@@ -102,8 +114,7 @@ export class OPFSAdapter implements FileSystemAdapter {
   }
 
   /**
-   * Check if a file or directory exists
-   * @param path Path to check
+   * Check if a file exists
    */
   public async exists(path: string): Promise<boolean> {
     try {
@@ -121,15 +132,13 @@ export class OPFSAdapter implements FileSystemAdapter {
   }
 
   /**
-   * List contents of a directory
-   * @param path Directory path
+   * List directory contents
    */
   public async listDirectory(path: string): Promise<string[]> {
     const dirHandle = await this.getFSHandle(path, { create: false, isFile: false });
     if (!dirHandle) return [];
 
     const entries: string[] = [];
-
     for await (const entry of dirHandle.keys()) {
       entries.push(entry);
     }
@@ -149,18 +158,22 @@ export class OPFSAdapter implements FileSystemAdapter {
   }
 
   /**
-   * Ensure a directory exists
-   * @param dirPath Array of directory segments
+   * Ensure directory exists
    */
   public async ensureDirectory(dirPath: string[]): Promise<void> {
+    console.log(`[Worker] Ensuring directory exists: ${dirPath.join('/')}`);
     const path = PathUtils.join(...dirPath);
-    await this.getFSHandle(path, { create: true, isFile: false });
+    try {
+      await this.getFSHandle(path, { create: true, isFile: false });
+      console.log(`[Worker] Directory ensured: ${path}`);
+    } catch (error) {
+      console.error('[Worker] Error ensuring directory:', error);
+      throw error;
+    }
   }
 
   /**
-   * Delete a directory and its contents
-   * @param path Directory path
-   * @param options Deletion options
+   * Delete directory
    */
   public async deleteDirectory(path: string, options: { recursive?: boolean } = {}): Promise<void> {
     const { parent, name } = PathUtils.parsePath(path);
@@ -172,3 +185,9 @@ export class OPFSAdapter implements FileSystemAdapter {
     }
   }
 }
+
+// Expose the worker instance using Comlink
+console.log('[Worker] Setting up Comlink exposure');
+const worker = new OPFSWorker();
+Comlink.expose(worker);
+console.log('[Worker] Worker exposed via Comlink');
