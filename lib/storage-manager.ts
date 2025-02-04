@@ -1,6 +1,5 @@
 import { AssetMetadata, CacheConfig, RequestOptions, StorageStats } from './types';
 import { CACHE_PATH, MAX_STORAGE_SIZE } from './constants';
-import { OPFSAdapter } from './opfs-adapter';
 import { getFileExtension, hashUrl } from './utils';
 import { OPFSProxyAdapter } from './workers/opfs-proxy-adapter';
 

@@ -18,14 +18,12 @@ export class OPFSProxyAdapter implements FileSystemAdapter {
       this.worker = new Worker(new URL('./opfs-worker', import.meta.url), {
         type: 'module',
       });
-      console.log('Worker created successfully');
       
       this.worker.onerror = (error) => {
         console.error('Worker error:', error);
       };
       
       this.proxy = Comlink.wrap<FileSystemAdapter>(this.worker);
-      console.log('Comlink proxy created');
       this.initialized = true;
     } catch (error) {
       console.error('Failed to initialize worker:', error);
@@ -175,7 +173,6 @@ export class OPFSProxyAdapter implements FileSystemAdapter {
    */
   public terminate(): void {
     if (this.worker) {
-      console.log('Terminating worker');
       this.worker.terminate();
       this.initialized = false;
     }

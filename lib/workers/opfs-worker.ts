@@ -7,12 +7,7 @@ import { PathUtils } from '../utils';
  * Handles file system operations in a separate thread
  */
 export class OPFSWorker implements FileSystemAdapter {
-  private initialized: boolean = false;
-
-  constructor() {
-    console.log('[Worker] OPFSWorker initializing');
-    this.initialized = true;
-  }
+  constructor() {}
 
   /**
    * Get a handle to a file system entry (file or directory)
@@ -23,15 +18,12 @@ export class OPFSWorker implements FileSystemAdapter {
       create?: IsCreate;
       isFile: IsFile;
     }
-  ) {
-    console.log(`[Worker] Getting FS handle for path: ${path}, isFile: ${options.isFile}`);
-    
+  ) {    
     const { parent, name } = PathUtils.parsePath(path);
 
     try {
       if (parent === null) {
         const root = await navigator.storage.getDirectory();
-        console.log('[Worker] Got root directory');
         return root as any;
       }
 
@@ -39,19 +31,15 @@ export class OPFSWorker implements FileSystemAdapter {
       let dirHandle = await navigator.storage.getDirectory();
 
       for (const p of dirPaths) {
-        console.log(`[Worker] Getting directory handle for: ${p}`);
         dirHandle = await dirHandle.getDirectoryHandle(p, { create: options.create });
       }
 
       if (options.isFile) {
-        console.log(`[Worker] Getting file handle for: ${name}`);
         return await dirHandle.getFileHandle(name, { create: options.create });
       } else {
-        console.log(`[Worker] Getting directory handle for: ${name}`);
         return await dirHandle.getDirectoryHandle(name, { create: options.create });
       }
     } catch (err) {
-      console.error('[Worker] Error getting FS handle:', err);
       if ((err as Error).name === 'NotFoundError') {
         return null as any;
       }
@@ -63,16 +51,13 @@ export class OPFSWorker implements FileSystemAdapter {
    * Write data to a file
    */
   public async writeFile(path: string, data: ArrayBuffer): Promise<void> {
-    console.log(`[Worker] Writing file: ${path}`);
     const fileHandle = await this.getFSHandle(path, { create: true, isFile: true });
     const writable = await fileHandle.createWritable();
 
     try {
       await writable.write(data);
       await writable.close();
-      console.log(`[Worker] Successfully wrote file: ${path}`);
     } catch (error) {
-      console.error('[Worker] Error writing file:', error);
       await writable.abort();
       throw error;
     }
@@ -161,11 +146,9 @@ export class OPFSWorker implements FileSystemAdapter {
    * Ensure directory exists
    */
   public async ensureDirectory(dirPath: string[]): Promise<void> {
-    console.log(`[Worker] Ensuring directory exists: ${dirPath.join('/')}`);
     const path = PathUtils.join(...dirPath);
     try {
       await this.getFSHandle(path, { create: true, isFile: false });
-      console.log(`[Worker] Directory ensured: ${path}`);
     } catch (error) {
       console.error('[Worker] Error ensuring directory:', error);
       throw error;
@@ -186,8 +169,5 @@ export class OPFSWorker implements FileSystemAdapter {
   }
 }
 
-// Expose the worker instance using Comlink
-console.log('[Worker] Setting up Comlink exposure');
 const worker = new OPFSWorker();
 Comlink.expose(worker);
-console.log('[Worker] Worker exposed via Comlink');
