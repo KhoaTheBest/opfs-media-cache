@@ -1,15 +1,15 @@
 {
-  "name": "browser-asset-caching",
+  "name": "@btg-pencil-ai/browser-asset-caching",
   "version": "0.0.1",
   "type": "module",
-  "module": "dist/@pencil-asset-cache.js",
-  "main": "dist/@pencil-asset-cache.umd.cjs",
-  "types": "dist/index.d.ts",
+  "module": "./dist/index.esm.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/@pencil-asset-cache.js",
-      "require": "./dist/@pencil-asset-cache.umd.cjs"
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "private": true,
@@ -26,6 +26,7 @@
     "dist"
   ],
   "devDependencies": {
+    "@types/node": "^22.13.10",
     "idb": "^8.0.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
@@ -33,6 +34,7 @@
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
   "dependencies": {
-    "comlink": "^4.4.2"
+    "comlink": "^4.4.2",
+    "opfs-tools": "^0.7.0"
   }
 }

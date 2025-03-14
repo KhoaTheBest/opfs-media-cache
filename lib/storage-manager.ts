@@ -1,27 +1,32 @@
+import { file, dir, write } from 'opfs-tools';
+import { CACHE_PATH, ASSETS_PATH, METADATA_FILE, MAX_STORAGE_SIZE } from './constants';
 import { AssetMetadata, CacheConfig, RequestOptions, StorageStats } from './types';
-import { CACHE_PATH, MAX_STORAGE_SIZE } from './constants';
 import { getFileExtension, hashUrl } from './utils';
-import { OPFSProxyAdapter } from './workers/opfs-proxy-adapter';
 
 /**
  * StorageManager class implementing singleton pattern for asset caching and retrieval
- * Uses improved OPFSAdapter for file system operations
+ * Uses opfs-tools library for file system operations
  */
 export class StorageManager {
   private static instance: StorageManager;
-  private readonly adapter: OPFSProxyAdapter;
   private readonly config: CacheConfig;
   private cache: Map<string, AssetMetadata>;
   private downloadQueue: Set<string>;
   private isProcessingQueue: boolean;
   private currentStorageSize: number;
+  private readonly downloadListeners: Map<
+    string,
+    Array<{
+      resolve: (value: { data: ArrayBuffer; metadata: AssetMetadata }) => void;
+      reject: (error: Error) => void;
+    }>
+  >;
 
   /**
    * Private constructor to enforce singleton pattern
    * @param config Optional configuration overrides
    */
   private constructor(config?: Partial<CacheConfig>) {
-    this.adapter = new OPFSProxyAdapter();
     this.config = {
       maxStorageSize: MAX_STORAGE_SIZE,
       cachePath: CACHE_PATH,
@@ -31,6 +36,7 @@ export class StorageManager {
     this.downloadQueue = new Set();
     this.isProcessingQueue = false;
     this.currentStorageSize = 0;
+    this.downloadListeners = new Map();
   }
 
   /**
@@ -49,13 +55,12 @@ export class StorageManager {
    */
   public async initialize(): Promise<void> {
     try {
-      await this.adapter.ensureDirectory(['pencil-opfs-storage']);
-      await this.adapter.ensureDirectory(['pencil-opfs-storage', 'assets']);
+      // Ensure directories exist
+      await dir(this.config.cachePath).create();
+      await dir(ASSETS_PATH).create();
 
       await this.loadMetadata();
-
       this.currentStorageSize = await this.calculateStorageSize();
-
       await this.cleanupOrphanedFiles();
     } catch (error) {
       console.error('Failed to initialize storage:', error);
@@ -71,7 +76,8 @@ export class StorageManager {
     for (const metadata of this.cache.values()) {
       if (metadata.status === 'cached') {
         try {
-          total += await this.adapter.getFileSize(metadata.path);
+          const fileSize = await file(metadata.path, 'r').getSize();
+          total += fileSize;
         } catch (error) {
           console.warn(`Failed to get size for ${metadata.path}:`, error);
         }
@@ -84,25 +90,29 @@ export class StorageManager {
    * Clean up any files not referenced in metadata
    */
   private async cleanupOrphanedFiles(): Promise<void> {
-    const assetsDir = `${this.config.cachePath}/assets`;
     try {
-      const directories = await this.adapter.listDirectory(assetsDir);
+      const assetsDir = dir(ASSETS_PATH);
       const validPaths = new Set(Array.from(this.cache.values()).map((m) => m.path));
-
-      for (const dir of directories) {
-        const dirPath = `${assetsDir}/${dir}`;
-        const files = await this.adapter.listDirectory(dirPath);
-
-        for (const file of files) {
-          const fullPath = `${dirPath}/${file}`;
-          if (!validPaths.has(fullPath)) {
-            await this.adapter.deleteFile(fullPath);
+      
+      if (await assetsDir.exists()) {
+        const directories = await assetsDir.children();
+        
+        for (const directory of directories) {
+          if (directory.kind === 'dir') {
+            const dirChildren = await directory.children();
+            
+            for (const child of dirChildren) {
+              if (child.kind === 'file' && !validPaths.has(child.path)) {
+                await child.remove();
+              }
+            }
+            
+            // Check if directory is empty after removing orphaned files
+            const remainingChildren = await directory.children();
+            if (remainingChildren.length === 0) {
+              await directory.remove();
+            }
           }
-        }
-
-        const remainingFiles = await this.adapter.listDirectory(dirPath);
-        if (remainingFiles.length === 0) {
-          await this.adapter.deleteDirectory(dirPath, { recursive: true });
         }
       }
     } catch (error) {
@@ -115,10 +125,10 @@ export class StorageManager {
    */
   private async loadMetadata(): Promise<void> {
     try {
-      const exists = await this.adapter.exists(`${CACHE_PATH}/metadata.json`);
-      if (exists) {
-        const data = await this.adapter.readFile(`${CACHE_PATH}/metadata.json`);
-        const text = new TextDecoder().decode(data);
+      const metadataFile = file(METADATA_FILE, 'r');
+      
+      if (await metadataFile.exists()) {
+        const text = await metadataFile.text();
         const metadata = JSON.parse(text);
         this.cache = new Map(Object.entries(metadata));
       }
@@ -134,8 +144,8 @@ export class StorageManager {
   private async saveMetadata(): Promise<void> {
     try {
       const metadata = Object.fromEntries(this.cache.entries());
-      const data = new TextEncoder().encode(JSON.stringify(metadata, null, 2));
-      await this.adapter.writeFile(`${CACHE_PATH}/metadata.json`, data.buffer);
+      const metadataJson = JSON.stringify(metadata, null, 2);
+      await write(METADATA_FILE, metadataJson);
     } catch (error) {
       console.error('Failed to save metadata:', error);
       throw error;
@@ -144,6 +154,8 @@ export class StorageManager {
 
   /**
    * Request an asset from cache or download it
+   * @param url URL of the asset to request
+   * @param options Request options
    */
   public async requestAsset(
     url: string,
@@ -152,9 +164,10 @@ export class StorageManager {
     }
   ): Promise<{ data: ArrayBuffer; metadata: AssetMetadata }> {
     const cached = this.cache.get(url);
+    
     if (cached?.status === 'cached') {
       try {
-        const data = await this.adapter.readFile(cached.path);
+        const data = await file(cached.path, 'r').arrayBuffer();
         cached.lastAccessed = Date.now();
         await this.saveMetadata();
         return { data, metadata: cached };
@@ -171,6 +184,8 @@ export class StorageManager {
 
   /**
    * Queue asset for download
+   * @param url URL of the asset to download
+   * @param options Request options
    */
   private async queueDownload(
     url: string,
@@ -188,14 +203,12 @@ export class StorageManager {
     });
   }
 
-  private readonly downloadListeners = new Map<
-    string,
-    Array<{
-      resolve: (value: { data: ArrayBuffer; metadata: AssetMetadata }) => void;
-      reject: (error: Error) => void;
-    }>
-  >();
-
+  /**
+   * Add download listener for a URL
+   * @param url URL to listen for
+   * @param resolve Callback for successful download
+   * @param reject Callback for failed download
+   */
   private addDownloadListener(
     url: string,
     resolve: (value: { data: ArrayBuffer; metadata: AssetMetadata }) => void,
@@ -246,6 +259,7 @@ export class StorageManager {
 
   /**
    * Download asset from URL with progress tracking
+   * @param url URL of the asset to download
    */
   private async downloadAsset(url: string): Promise<ArrayBuffer> {
     const response = await fetch(url);
@@ -263,6 +277,8 @@ export class StorageManager {
 
   /**
    * Save asset to cache with storage management
+   * @param url URL of the asset
+   * @param data Asset data to save
    */
   private async saveToCache(url: string, data: ArrayBuffer): Promise<void> {
     const metadata = this.cache.get(url);
@@ -274,13 +290,12 @@ export class StorageManager {
 
     const hash = await hashUrl(url);
     const extension = getFileExtension(metadata.contentType);
-    const assetDir = this.getAssetDirPath(hash);
-    const dirPath = assetDir.replace('./', '').split('/');
-    await this.adapter.ensureDirectory(dirPath);
-
+    const assetDirPath = this.getAssetDirPath(hash);
+    
+    await dir(assetDirPath).create();
+    
     const filePath = this.getAssetFilePath(hash, extension);
-
-    await this.adapter.writeFile(filePath, data);
+    await write(filePath, data);
 
     metadata.path = filePath;
     metadata.size = data.byteLength;
@@ -292,6 +307,7 @@ export class StorageManager {
 
   /**
    * Evict least recently used entries to free up space
+   * @param requiredSpace Space required in bytes
    */
   private async evictCache(requiredSpace: number): Promise<void> {
     const entries = Array.from(this.cache.entries())
@@ -303,12 +319,13 @@ export class StorageManager {
       if (freedSpace >= requiredSpace) break;
 
       try {
-        await this.adapter.deleteFile(metadata.path);
+        await file(metadata.path, 'r').remove();
 
         const dirPath = metadata.path.substring(0, metadata.path.lastIndexOf('/'));
-        const remainingFiles = await this.adapter.listDirectory(dirPath);
-        if (remainingFiles.length === 0) {
-          await this.adapter.deleteDirectory(dirPath, { recursive: true });
+        const dirChildren = await dir(dirPath).children();
+        
+        if (dirChildren.length === 0) {
+          await dir(dirPath).remove();
         }
 
         this.cache.delete(url);
@@ -322,6 +339,12 @@ export class StorageManager {
     await this.saveMetadata();
   }
 
+  /**
+   * Notify listeners of download completion or failure
+   * @param url URL of the downloaded asset
+   * @param data Downloaded data or null on failure
+   * @param error Error if download failed
+   */
   private notifyListeners(url: string, data: ArrayBuffer | null, error?: Error): void {
     const listeners = this.downloadListeners.get(url) || [];
     const metadata = this.cache.get(url);
@@ -339,6 +362,8 @@ export class StorageManager {
 
   /**
    * Create metadata for a new asset
+   * @param url URL of the asset
+   * @param options Request options
    */
   private createMetadata(url: string, options: RequestOptions): AssetMetadata {
     return {
@@ -358,9 +383,15 @@ export class StorageManager {
    */
   public async clearCache(): Promise<void> {
     try {
-      const assetDirs = await this.adapter.listDirectory(`${CACHE_PATH}/assets`);
-      for (const dir of assetDirs) {
-        await this.adapter.deleteDirectory(`${CACHE_PATH}/assets/${dir}`, { recursive: true });
+      const assetsDir = dir(ASSETS_PATH);
+      if (await assetsDir.exists()) {
+        const directories = await assetsDir.children();
+        
+        for (const directory of directories) {
+          if (directory.kind === 'dir') {
+            await directory.remove();
+          }
+        }
       }
 
       this.cache.clear();
@@ -376,12 +407,17 @@ export class StorageManager {
    * Get storage statistics
    */
   public async getStorageStats(): Promise<StorageStats> {
-    return this.adapter.getStorageStats();
+    const estimate = await navigator.storage.estimate();
+    return {
+      used: estimate.usage || 0,
+      available: (estimate.quota || 0) - (estimate.usage || 0),
+      total: estimate.quota || 0,
+    };
   }
 
   /**
    * Get list of all cached assets
-   * @returns {AssetMetadata[]} Array of all cached assets metadata
+   * @returns Array of all cached assets metadata
    */
   public getCachedAssets(): AssetMetadata[] {
     return Array.from(this.cache.values());
@@ -404,13 +440,5 @@ export class StorageManager {
    */
   private getAssetFilePath(hash: string, extension: string): string {
     return `${this.getAssetDirPath(hash)}/${hash}.${extension}`;
-  }
-
-  /**
-   * Cleanup method to be called when the manager is no longer needed
-   * Terminates the worker to free up resources
-   */
-  public cleanup(): void {
-    this.adapter.terminate();
   }
 }
