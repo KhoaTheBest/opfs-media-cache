@@ -1,6 +1,5 @@
 import { ROOT_PATH } from '../lib/constants';
 import { StorageManager } from '../lib/storage-manager'; // Update path if needed
-import { extractAssetId } from '../lib/utils'; // Import the utility function
 
 // UI elements
 const initCacheBtn = document.getElementById('initCache') as HTMLButtonElement;
@@ -12,7 +11,6 @@ const fileInput = document.getElementById('fileInput') as HTMLInputElement;
 const fileTree = document.getElementById('fileTree') as HTMLDivElement;
 const notification = document.getElementById('notification') as HTMLDivElement;
 const previewContent = document.getElementById('previewContent') as HTMLDivElement;
-
 // Test assets
 const TEST_IMAGE = [
   'https://live.staticflickr.com/65535/54059628695_1ea1ba9e15_o_d.jpg',
@@ -167,7 +165,7 @@ async function clearCache(): Promise<void> {
 
 initCacheBtn.addEventListener('click', async () => {
   try {
-    console.log('Initializing storage...');
+    console.log('Initializing storage...', addTestAssetBtn);
     await storageManager.init();
     showNotification('Cache initialized successfully');
     initCacheBtn.disabled = true;
