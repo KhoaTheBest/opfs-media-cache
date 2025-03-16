@@ -1,3 +1,9 @@
+export interface CacheMetadata {
+  lastAccessed: number
+  totalSize: number
+  mainFileExt: string
+}
+
 export type CacheEntry = {
   path: string;
   size: number;

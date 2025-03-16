@@ -56,3 +56,12 @@ export function getFileExtension(contentType?: string): string {
       return paths.join('/').replace(/\/+/g, '/');
     },
   };
+
+  //@note for reviewer - do we need any url replacement logic?
+  export function extractAssetId(url: string) {
+    const parts = url.split('/')
+    const filename = parts[parts.length - 1]
+    const assetId = filename.split('.')[0]
+
+    return assetId
+  }
