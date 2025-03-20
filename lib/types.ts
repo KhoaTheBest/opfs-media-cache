@@ -3,7 +3,3 @@ export interface AssetMetadata {
   totalSize: number
   mainFileExt: string
 }
-
-export interface FileInfo {
-
-}

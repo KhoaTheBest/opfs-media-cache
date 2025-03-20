@@ -15,7 +15,7 @@ export function getFileExtension(contentType?: string): string {
     'application/json': 'json',
     'application/pdf': 'pdf',
   };
-  return mapping[contentType];
+  return mapping[contentType] || 'bin';
 }
 
 //@note for reviewer - do we need any url replacement logic?
