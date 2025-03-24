@@ -1,7 +1,7 @@
 {
   "name": "@btg-pencil-ai/browser-asset-caching",
   "packageManager": "yarn@4.4.0",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "module": "./dist/index.esm.js",
   "main": "./dist/index.js",
