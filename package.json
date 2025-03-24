@@ -13,7 +13,6 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "private": true,
   "scripts": {
     "analyze": "vite build --mode analyze",
     "dev": "vite --config vite.demo-config.ts",
