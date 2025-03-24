@@ -15,8 +15,10 @@
   },
   "private": true,
   "scripts": {
+    "analyze": "vite build --mode analyze",
     "dev": "vite --config vite.demo-config.ts",
     "lint": "eslint . --ext .ts",
+    "release": "yarn version --immediate patch && tsc && vite build && npm publish --non-interactive",
     "build": "vite build && tsc -p tsconfig.build.json",
     "build:watch": "tsc -p tsconfig.build.json && vite build --watch --emptyOutDir false",
     "build:demo": "vite build --config vite.demo-config.ts",
