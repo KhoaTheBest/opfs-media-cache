@@ -1,0 +1,144 @@
+name: Publish Package
+on:
+  workflow_dispatch:
+    inputs:
+      RUNNER:
+        type: choice
+        default: 'ubuntu-latest'
+        description: Choose Runner for the Workflow
+        options:
+          - 'ubuntu-latest'
+          - 'self-hosted-runner'
+  push:
+    branches:
+      - development
+      - main
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-env:
+    name: Prepare Env
+    runs-on: ${{ (inputs.RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 2
+    outputs:
+      SLACK_WEBHOOK_URL: ${{ steps.vars.outputs.SLACK_WEBHOOK_URL }}
+      OIDC_PROVIDER: ${{ steps.vars.outputs.OIDC_PROVIDER }}
+      SERVICE_ACCOUNT: ${{ steps.vars.outputs.SERVICE_ACCOUNT }}
+      PROJECT_ID: ${{ steps.vars.outputs.PROJECT_ID }}
+      PUBLISH_COMMAND: ${{ steps.vars.outputs.PUBLISH_COMMAND }}
+      REPO: ${{ steps.vars.outputs.REPO }}
+    steps:
+      - id: vars
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "Detected branch: $BRANCH"
+
+          if [ "$GITHUB_REF_TYPE" == 'main' ]; then
+            echo "Setting up production environment:"
+            echo "OIDC_PROVIDER=PRD_OIDC_PROVIDER" >> $GITHUB_OUTPUT
+            echo "SERVICE_ACCOUNT=PRD_SERVICE_ACCOUNT" >> $GITHUB_OUTPUT
+            echo "PROJECT_ID=PRD_PROJECT_ID" >> $GITHUB_OUTPUT
+            echo "SLACK_WEBHOOK_URL=PRD_SLACK_WEBHOOK_URL" >> $GITHUB_OUTPUT 
+            echo "PUBLISH_COMMAND=release" >> $GITHUB_OUTPUT
+            echo "REPO=pencil-prd-bl-pkg-repo" >> $GITHUB_OUTPUT
+          elif [ "$BRANCH" == 'development' ]; then
+            echo "Setting up staging environment:"
+            echo "OIDC_PROVIDER=STG_OIDC_PROVIDER" >> $GITHUB_OUTPUT
+            echo "SERVICE_ACCOUNT=STG_SERVICE_ACCOUNT" >> $GITHUB_OUTPUT
+            echo "PROJECT_ID=STG_PROJECT_ID" >> $GITHUB_OUTPUT
+            echo "SLACK_WEBHOOK_URL=STG_SLACK_WEBHOOK_URL" >> $GITHUB_OUTPUT 
+            echo "PUBLISH_COMMAND=release" >> $GITHUB_OUTPUT
+            echo "REPO=pencil-stg-bl-node-pkg-repo" >> $GITHUB_OUTPUT
+          else
+            echo "Branch not configured!"
+            exit 1
+          fi
+  publish-package:
+    runs-on: ${{ (inputs.RUNNER) || 'ubuntu-latest' }}
+    needs: prepare-env
+    permissions:
+      contents: 'write'
+      id-token: 'write'
+    env:
+      OIDC_PROVIDER: ${{needs.prepare-env.outputs.OIDC_PROVIDER}}
+      SERVICE_ACCOUNT: ${{needs.prepare-env.outputs.SERVICE_ACCOUNT}}
+      PROJECT_ID: ${{needs.prepare-env.outputs.PROJECT_ID}}
+      PUBLISH_COMMAND: ${{needs.prepare-env.outputs.PUBLISH_COMMAND}}
+      REPO: ${{needs.prepare-env.outputs.REPO}}
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.PENCIL_ACTION_APPID }}
+          private-key: ${{ secrets.PENCIL_ACTION_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: fregante/setup-git-user@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.10.0
+
+      - name: yarn Install
+        run: |
+          version=$(jq -r '.version' package.json)
+          echo ":man_with_probing_cane: Current Version - $version" >> $GITHUB_STEP_SUMMARY
+          corepack enable
+          yarn set version 4.4.0
+          yarn install
+      - uses: 'google-github-actions/auth@v2'
+        id: auth
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ vars[env.OIDC_PROVIDER] }}
+          service_account: ${{ vars[env.SERVICE_ACCOUNT] }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Create .npmrc
+        run: |
+          cat << EOF > .npmrc
+            @btg-pencil-ai:registry=https://europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/
+            //europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:always-auth=true
+            //europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:_authToken="${{ steps.auth.outputs.access_token }}"
+          EOF
+      - name: Artifact login and push package
+        run: |
+          npx google-artifactregistry-auth
+          export NODE_OPTIONS="--max_old_space_size=4096"
+          echo "publishcommand=${PUBLISH_COMMAND}"
+          yarn $PUBLISH_COMMAND
+      - name: update version number
+        run: |
+          version=$(jq -r '.version' package.json)
+          echo ":rocket: Version - $version" >> $GITHUB_STEP_SUMMARY
+          git reset --soft HEAD~1
+          git pull origin ${GITHUB_REF#refs/heads/}
+          git commit -am "New version ${version} deployed [skip ci]"
+          git push origin ${GITHUB_REF#refs/heads/}
+  slack-notification:
+    name: Slack Notification
+    if: always()
+    runs-on: ${{ (inputs.RUNNER) || 'ubuntu-latest' }}
+    needs:
+      - prepare-env
+      - publish-package
+    env:
+      SLACK_WEBHOOK_URL: ${{needs.prepare-env.outputs.SLACK_WEBHOOK_URL}}
+    steps:
+      - name: Slack Workflow Notification
+        uses: Gamesight/slack-workflow-status@v1.3.0
+        with:
+          repo_token: ${{secrets.GITHUB_TOKEN}}
+          slack_webhook_url: ${{ vars[env.SLACK_WEBHOOK_URL] }}
+          name: 'GitHub Workflow Status'
+          icon_url: 'https://avatars.githubusercontent.com/u/9919?s=96&v=4'
+          include_commit_message: true
