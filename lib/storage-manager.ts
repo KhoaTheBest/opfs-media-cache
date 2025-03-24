@@ -1,346 +1,345 @@
-import { AssetMetadata, CacheConfig, FileSystemAdapter, RequestOptions, StorageStats } from './types';
-import { CACHE_PATH, CHUNK_SIZE, MAX_STORAGE_SIZE } from './constants';
-import { OPFSAdapter } from './opfs-adapter';
+import { file, dir, write } from 'opfs-tools';
+import { MAX_STORAGE_SIZE, ROOT_PATH } from './constants';
+import { AssetMetadata } from './types';
+import { extractAssetId, getFileExtension } from './utils';
 
-/**
- * Manages asset caching and retrieval with priority-based downloading
- * and LRU cache eviction
- */
 export class StorageManager {
-  private static instance: StorageManager;
-  private readonly adapter: FileSystemAdapter;
-  private readonly config: CacheConfig;
-  private readonly cache: Map<string, AssetMetadata>;
-  private readonly downloadQueue: Set<string>;
-  private currentStorageSize: number;
-  private isProcessingQueue: boolean;
+  #rootDir: any;
+  cache: Map<string, AssetMetadata> = new Map();
+  #currentStorageSize: number = 0;
+  #maxStorageSize: number = 0;
+  #assetLocks: Map<string, Promise<any>> = new Map();
+  #initialized: boolean = false;
+  #initPromise!: Promise<void>;
+  #ongoingFetches = new Map<string, Promise<File>>();
+  static #instance: StorageManager | null = null;
 
-  private constructor(config?: Partial<CacheConfig>) {
-    this.adapter = new OPFSAdapter();
-    this.config = {
-      maxStorageSize: MAX_STORAGE_SIZE,
-      cachePath: CACHE_PATH,
-      chunkSize: CHUNK_SIZE,
-      ...config,
-    };
+  constructor() {
+    if (StorageManager.#instance) {
+      return StorageManager.#instance;
+    }
+
+    this.#rootDir = dir(ROOT_PATH);
     this.cache = new Map();
-    this.downloadQueue = new Set();
-    this.currentStorageSize = 0;
-    this.isProcessingQueue = false;
+    this.#currentStorageSize = 0;
+    this.#maxStorageSize = MAX_STORAGE_SIZE;
+    this.#assetLocks = new Map();
+    this.#initialized = false;
+    
+    this.#initPromise = this.#initializeInternal();
+    
+    StorageManager.#instance = this;
   }
 
-  /**
-   * Get singleton instance of StorageManager
-   */
-  public static getInstance(config?: Partial<CacheConfig>): StorageManager {
-    if (!StorageManager.instance) {
-      StorageManager.instance = new StorageManager(config);
+  public static getInstance(): StorageManager {
+    if (!StorageManager.#instance) {
+      StorageManager.#instance = new StorageManager();
+    }
+    return StorageManager.#instance;
+  }
+
+  async init(): Promise<void> {
+    return this.#initPromise;
+  }
+  
+  async #initializeInternal(): Promise<void> {
+    if (this.#initialized) {
+      return;
     }
 
-    console.debug('Use StorageManger: ', StorageManager.instance);
-    return StorageManager.instance;
-  }
-
-  /**
-   * Initialize the storage system
-   */
-  public async initialize(): Promise<void> {
-    console.info('Initializing storage system...');
     try {
-      const stats = await this.adapter.getStorageStats();
-      this.currentStorageSize = stats.used;
-      console.info('Storage system status: ', stats);
-      await this.loadCacheMetadata();
-    } catch (error) {
-      console.error('Failed to initialize storage:', error);
-      throw new Error('Storage initialization failed');
+      await this.#rootDir.create();
+      const children = await this.#rootDir.children();
+
+      for (const child of children) {
+        if (child.kind === 'dir') {
+          const assetId = child.name;
+          const cacheMetadataPath = `${child.path}/cache-metadata.json`;
+
+          try {
+            const text = await file(cacheMetadataPath, 'r').text();
+            const cacheMetadata: AssetMetadata = JSON.parse(text);
+            this.cache.set(assetId, cacheMetadata);
+            this.#currentStorageSize += cacheMetadata.totalSize;
+          } catch (err) {
+            console.error(`Failed to load cache metadata from ${assetId}:`, err);
+          }
+        }
+      }
+
+      this.#initialized = true;
+    } catch (err) {
+      console.error('Failed to initialize StorageManager:', err);
+      throw err;
     }
   }
 
-  /**
-   * Request an asset from the cache or download it
-   */
-  public async requestAsset(
-    url: string,
-    options: RequestOptions = {}
-  ): Promise<{ data: ArrayBuffer; metadata: AssetMetadata }> {
-    return new Promise(async (resolve, reject) => {
+  async #retryOperation<T>(operation: () => Promise<T>, maxRetries = 3): Promise<T> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Check if asset is already in cache
-        const cached = this.cache.get(url);
-        if (cached && cached.status === 'cached') {
-          const data = await this.readFromCache(url);
-          cached.lastAccessed = Date.now();
-          resolve({ data, metadata: cached });
-          return;
-        }
-
-        // Create or update metadata
-        const metadata = this.createMetadata(url, options);
-        this.cache.set(url, metadata);
-
-        // If already downloading, wait for completion
-        if (metadata.status === 'downloading') {
-          this.addDownloadListener(url, resolve, reject);
-          return;
-        }
-
-        // Queue the download
-        metadata.status = 'queued';
-        this.downloadQueue.add(url);
-        this.addDownloadListener(url, resolve, reject);
-        this.processDownloadQueue();
+        return await operation();
       } catch (error) {
-        reject(error);
+        const isRetryable = error instanceof Error && (
+          error.message.includes("writer have not been closed") || 
+          error.message.includes("failed to read") ||
+          error.message.includes("failed to fetch") ||
+          error.message.includes("The request is not allowed")
+        );
+        
+        lastError = error instanceof Error ? error : new Error(String(error));
+        
+        if (attempt >= maxRetries || !isRetryable) {
+          throw lastError;
+        }
+        
+        const delay = 200 * Math.pow(2, attempt);
+        console.warn(`OPFS operation failed, retrying (${attempt + 1}/${maxRetries}) after ${delay}ms: ${lastError.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw lastError || new Error('Unknown error in retry operation');
+  }
+
+  async #withLock<T>(assetId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#assetLocks.get(assetId) || Promise.resolve();
+    const current = previous.then(() => this.#retryOperation(operation));
+    this.#assetLocks.set(
+      assetId,
+      current.catch(() => {})
+    );
+    return current;
+  }
+
+  async addAsset(assetId: string, mainData: ArrayBuffer, metadata: object, contentType: string): Promise<void> {
+    await this.#initPromise;
+    
+    return this.#withLock(assetId, async () => {
+      const ext = getFileExtension(contentType);
+      const assetDirPath = `${this.#rootDir.path}/${assetId}`;
+      const mainFilePath = `${assetDirPath}/${assetId}.${ext}`;
+      const metadataFilePath = `${assetDirPath}/${assetId}-meta.json`;
+      const cacheMetadataPath = `${assetDirPath}/cache-metadata.json`;
+
+      const metadataJson = JSON.stringify(metadata);
+      const cacheMetadataTemp = { lastAccessed: Date.now(), totalSize: 0, mainFileExt: ext };
+      const totalSize = mainData.byteLength + metadataJson.length + JSON.stringify(cacheMetadataTemp).length;
+
+      if (this.#currentStorageSize + totalSize > this.#maxStorageSize) {
+        await this.evictLRU(totalSize);
+      }
+
+      try {
+        const assetDir = dir(assetDirPath);
+        await assetDir.create();
+        
+        await write(mainFilePath, mainData);
+        await write(metadataFilePath, metadataJson);
+
+        const cacheMetadata: AssetMetadata = {
+          lastAccessed: Date.now(),
+          totalSize,
+          mainFileExt: ext,
+        };
+        await write(cacheMetadataPath, JSON.stringify(cacheMetadata));
+
+        this.cache.set(assetId, cacheMetadata);
+        this.#currentStorageSize += totalSize;
+      } catch (err) {
+        console.error('Failed to add asset:', assetId, err);
+        throw err;
       }
     });
   }
 
-  /**
-   * Get statistics about storage usage
-   */
-  public async getStorageStats(): Promise<StorageStats> {
-    return this.adapter.getStorageStats();
-  }
-
-  /**
-   * Get list of all cached assets
-   */
-  public getCachedAssets(): AssetMetadata[] {
-    return Array.from(this.cache.values());
-  }
-
-  /**
-   * Clear all cached assets
-   */
-  public async clearCache(): Promise<void> {
-    for (const [_, metadata] of this.cache.entries()) {
-      if (metadata.status === 'cached') {
-        await this.adapter.deleteFile(metadata.path);
-      }
+  async getAsset(url: string): Promise<File> {
+    await this.#initPromise;
+    
+    const assetId = extractAssetId(url);
+    
+    if (this.#ongoingFetches.has(assetId)) {
+      return this.#ongoingFetches.get(assetId)!;
     }
-    this.cache.clear();
-    this.downloadQueue.clear();
-    this.currentStorageSize = 0;
-  }
 
-  /**
-   * Load cache metadata from storage
-   */
-  private async loadCacheMetadata(): Promise<void> {
-    console.info('Loading cache metadata...');
-    try {
-      const metadataPath = `${this.config.cachePath}/metadata.json`;
-      if (await this.adapter.exists(metadataPath)) {
-        const data = await this.adapter.readFile(metadataPath);
-        const metadata = JSON.parse(new TextDecoder().decode(data));
-        console.debug('METADATA: ', metadata);
-        Object.entries(metadata).forEach(([url, meta]) => {
-          this.cache.set(url, meta as AssetMetadata);
-        });
-      }
-    } catch (error) {
-      console.warn('Failed to load cache metadata:', error);
-    }
-  }
-
-  /**
-   * Save cache metadata to storage
-   */
-  private async saveCacheMetadata(): Promise<void> {
-    try {
-      const metadata = Object.fromEntries(this.cache.entries());
-      const data = new TextEncoder().encode(JSON.stringify(metadata));
-      await this.adapter.writeFile(`${this.config.cachePath}/metadata.json`, data.buffer);
-    } catch (error) {
-      console.warn('Failed to save cache metadata:', error);
-    }
-  }
-
-  /**
-   * Process the download queue
-   */
-  private async processDownloadQueue(): Promise<void> {
-    if (this.isProcessingQueue || this.downloadQueue.size === 0) return;
-
-    this.isProcessingQueue = true;
-    try {
-      const urls = Array.from(this.downloadQueue).sort((a, b) => {
-        const prioA = this.cache.get(a)?.priority || 0;
-        const prioB = this.cache.get(b)?.priority || 0;
-        return prioB - prioA;
-      });
-
-      for (const url of urls) {
-        const metadata = this.cache.get(url);
-        if (!metadata || metadata.status === 'downloading') continue;
-
+    const fetchPromise = this.#withLock(assetId, async () => {
+      if (this.cache.has(assetId)) {
         try {
-          metadata.status = 'downloading';
-          const data = await this.downloadAsset(url, metadata);
-          await this.saveToCache(url, data);
-          this.downloadQueue.delete(url);
-          this.notifyListeners(url, data);
-        } catch (error) {
-          metadata.status = 'error';
-          this.notifyListeners(url, null, error as Error);
+          const metadata = this.cache.get(assetId)!;
+          const mainFilePath = `${this.#rootDir.path}/${assetId}/${assetId}.${metadata.mainFileExt}`;
+          const opfsFile = file(mainFilePath, 'r');
+          const originFile = await opfsFile.getOriginFile();
+          
+          if (originFile) {
+            await this.updateLastAccessed(assetId);
+            return originFile;
+          }
+        } catch (err) {
+          console.warn('Cached asset retrieval failed, refetching:', err);
         }
       }
-    } finally {
-      this.isProcessingQueue = false;
-      await this.saveCacheMetadata();
-    }
-  }
 
-  /**
-   * Calculate priority based on timestamp and other factors
-   */
-  private calculatePriority(options: RequestOptions): number {
-    if (typeof options.priority === 'number') {
-      return options.priority;
-    }
-    const timestamp = options.timestamp || 0;
-    return Math.max(0, 1000 - timestamp);
-  }
-
-  /**
-   * Create metadata for a new asset
-   */
-  private createMetadata(url: string, options: RequestOptions): AssetMetadata {
-    const existing = this.cache.get(url);
-    const status = existing?.status || 'queued';
-
-    return {
-      url,
-      path: `${this.config.cachePath}/${this.hashUrl(url)}`,
-      size: existing?.size || 0,
-      lastAccessed: Date.now(),
-      status,
-      priority: this.calculatePriority(options),
-      partialContent: options.partial,
-    };
-  }
-
-  // Download helpers
-  private readonly downloadListeners = new Map<
-    string,
-    Array<{
-      resolve: (value: { data: ArrayBuffer; metadata: AssetMetadata }) => void;
-      reject: (error: Error) => void;
-    }>
-  >();
-
-  private addDownloadListener(
-    url: string,
-    resolve: (value: { data: ArrayBuffer; metadata: AssetMetadata }) => void,
-    reject: (error: Error) => void
-  ): void {
-    const listeners = this.downloadListeners.get(url) || [];
-    listeners.push({ resolve, reject });
-    this.downloadListeners.set(url, listeners);
-  }
-
-  private notifyListeners(url: string, data: ArrayBuffer | null, error?: Error): void {
-    const listeners = this.downloadListeners.get(url) || [];
-    const metadata = this.cache.get(url);
-
-    listeners.forEach(({ resolve, reject }) => {
-      if (error || !data || !metadata) {
-        reject(error || new Error('Download failed'));
-      } else {
-        resolve({ data, metadata });
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
       }
+      
+      const data = await response.arrayBuffer();
+      const contentType = response.headers.get('content-type') || 'video/mp4';
+      const ext = getFileExtension(contentType);
+      const metadata = {
+        url,
+        fetchedAt: new Date().toISOString(),
+        contentType,
+      };
+
+      const assetDirPath = `${this.#rootDir.path}/${assetId}`;
+      const mainFilePath = `${assetDirPath}/${assetId}.${ext}`;
+      const metadataFilePath = `${assetDirPath}/${assetId}-meta.json`;
+      const cacheMetadataPath = `${assetDirPath}/cache-metadata.json`;
+
+      const metadataJson = JSON.stringify(metadata);
+      const cacheMetadata = {
+        lastAccessed: Date.now(),
+        totalSize: data.byteLength + metadataJson.length,
+        mainFileExt: ext,
+      };
+
+      const totalSize = cacheMetadata.totalSize + JSON.stringify(cacheMetadata).length;
+      if (this.#currentStorageSize + totalSize > this.#maxStorageSize) {
+        await this.evictLRU(totalSize);
+      }
+
+      const assetDir = dir(assetDirPath);
+      await assetDir.create();
+
+      await write(mainFilePath, data);
+      await write(metadataFilePath, metadataJson);
+      await write(cacheMetadataPath, JSON.stringify(cacheMetadata));
+
+      this.cache.set(assetId, cacheMetadata);
+      this.#currentStorageSize += totalSize;
+
+      const opfsFile = file(mainFilePath, 'r');
+      const originFile = await opfsFile.getOriginFile();
+      if (!originFile) {
+        throw new Error(`Failed to retrieve ${assetId} after caching`);
+      }
+      
+      return originFile;
     });
 
-    this.downloadListeners.delete(url);
+    this.#ongoingFetches.set(assetId, fetchPromise);
+
+    try {
+      return await fetchPromise;
+    } finally {
+      this.#ongoingFetches.delete(assetId);
+    }
   }
 
-  /**
-   * Download asset from URL
-   */
-  private async downloadAsset(url: string, metadata: AssetMetadata): Promise<ArrayBuffer> {
-    const headers: HeadersInit = {};
-    if (metadata.partialContent) {
-      headers['Range'] = `bytes=${metadata.partialContent.start}-${metadata.partialContent.end}`;
-    }
+  async getMainAsset(assetId: string): Promise<File> {
+    await this.#initPromise;
 
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`Failed to download asset: ${response.statusText}`);
-    }
-
-    return response.arrayBuffer();
-  }
-
-  /**
-   * Save asset to cache
-   */
-  private async saveToCache(url: string, data: ArrayBuffer): Promise<void> {
-    const metadata = this.cache.get(url);
-    if (!metadata) return;
-
-    // Check if we need to free up space
-    if (this.currentStorageSize + data.byteLength > this.config.maxStorageSize) {
-      await this.evictCache(data.byteLength);
-    }
-
-    await this.adapter.writeFile(metadata.path, data);
-    metadata.size = data.byteLength;
-    metadata.status = 'cached';
-    this.currentStorageSize += data.byteLength;
-  }
-
-  /**
-   * Read asset from cache
-   */
-  private async readFromCache(url: string): Promise<ArrayBuffer> {
-    const metadata = this.cache.get(url);
-    if (!metadata || metadata.status !== 'cached') {
-      throw new Error('Asset not found in cache');
-    }
-
-    return this.adapter.readFile(metadata.path);
-  }
-
-  /**
-   * Evict least recently used entries to free up space
-   */
-  private async evictCache(requiredSpace: number): Promise<void> {
-    const entries = Array.from(this.cache.entries())
-      .filter(([, meta]) => meta.status === 'cached')
-      .sort(([, a], [, b]) => a.lastAccessed - b.lastAccessed);
-
-    let freedSpace = 0;
-    for (const [url, metadata] of entries) {
-      if (freedSpace >= requiredSpace) break;
-
-      try {
-        await this.adapter.deleteFile(metadata.path);
-        this.cache.delete(url);
-        freedSpace += metadata.size;
-        this.currentStorageSize -= metadata.size;
-      } catch (error) {
-        console.error(`Failed to remove cache entry: ${url}`, error);
+    return this.#withLock(assetId, async () => {
+      const metadata = this.cache.get(assetId);
+      if (!metadata) {
+        throw new Error(`Asset not found: ${assetId}`);
       }
+
+      const mainFilePath = `${this.#rootDir.path}/${assetId}/${assetId}.${metadata.mainFileExt}`;
+      
+      return this.#retryOperation(async () => {
+        const opfsFile = file(mainFilePath, 'r');
+        const originFile = await opfsFile.getOriginFile();
+        if (!originFile) {
+          throw new Error(`Failed to get origin file for ${assetId}`);
+        }
+        await this.updateLastAccessed(assetId);
+        return originFile;
+      });
+    });
+  }
+
+  async getMetadata(assetId: string): Promise<object> {
+    await this.#initPromise;
+
+    return this.#withLock(assetId, async () => {
+      const metadata = this.cache.get(assetId);
+      if (!metadata) {
+        throw new Error(`Asset not found: ${assetId}`);
+      }
+
+      const metadataFilePath = `${this.#rootDir.path}/${assetId}/${assetId}-meta.json`;
+      
+      return this.#retryOperation(async () => {
+        const text = await file(metadataFilePath, 'r').text();
+        await this.updateLastAccessed(assetId);
+        return JSON.parse(text);
+      });
+    });
+  }
+
+  private async updateLastAccessed(assetId: string): Promise<void> {
+    const metadata = this.cache.get(assetId);
+    if (metadata) {
+      metadata.lastAccessed = Date.now();
+      const cacheMetadataPath = `${this.#rootDir.path}/${assetId}/cache-metadata.json`;
+      
+      await this.#retryOperation(async () => {
+        await write(cacheMetadataPath, JSON.stringify(metadata));
+      });
     }
   }
 
-  /**
-   * Create a safe filename from URL using Web Crypto API
-   * @private
-   */
-  private async hashUrl(url: string): Promise<string> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(url);
+  private async evictLRU(requiredSpace: number): Promise<void> {
+    const entries = Array.from(this.cache.entries()).sort((a, b) => a[1].lastAccessed - b[1].lastAccessed);
+    let freedSpace = 0;
 
-    // Generate SHA-256 hash
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    for (const [assetId, metadata] of entries) {
+      if (freedSpace >= requiredSpace) break;
+      await this.removeAsset(assetId);
+      freedSpace += metadata.totalSize;
+    }
+  }
 
-    // Convert to hex string
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  private async removeAsset(assetId: string): Promise<void> {
+    return this.#withLock(assetId, async () => {
+      try {
+        await this.#retryOperation(async () => {
+          const assetDir = dir(`${this.#rootDir.path}/${assetId}`);
+          await assetDir.remove();
+        });
 
-    // Take first 8 characters and add timestamp
-    return `${hashHex.slice(0, 8)}-${Date.now()}`;
+        const metadata = this.cache.get(assetId);
+        if (metadata) {
+          this.#currentStorageSize -= metadata.totalSize;
+          this.cache.delete(assetId);
+        }
+      } catch (err) {
+        console.error('Error removing asset:', assetId, err);
+        throw err;
+      }
+    });
+  }
+
+  async getCachedAssets(): Promise<Array<{ id: string; url: string }>> {
+    await this.#initPromise;
+
+    return Array.from(this.cache.keys()).map((assetId) => ({
+      id: assetId,
+      url: `asset://${assetId}`,
+    }));
+  }
+
+  async clearCache(): Promise<void> {
+    await this.#initPromise;
+    
+    const assetIds = Array.from(this.cache.keys());
+    for (const assetId of assetIds) {
+      await this.removeAsset(assetId);
+    }
+    this.#currentStorageSize = 0;
   }
 }
