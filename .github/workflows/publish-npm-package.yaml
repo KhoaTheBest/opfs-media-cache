@@ -42,7 +42,7 @@ jobs:
             echo "PROJECT_ID=PRD_PROJECT_ID" >> $GITHUB_OUTPUT
             echo "SLACK_WEBHOOK_URL=PRD_SLACK_WEBHOOK_URL" >> $GITHUB_OUTPUT 
             echo "PUBLISH_COMMAND=release" >> $GITHUB_OUTPUT
-            echo "REPO=pencil-prd-bl-pkg-repo" >> $GITHUB_OUTPUT
+            echo "REPO=pencil-npm-packages" >> $GITHUB_OUTPUT
           elif [ "$BRANCH" == 'development' ]; then
             echo "Setting up staging environment:"
             echo "OIDC_PROVIDER=STG_OIDC_PROVIDER" >> $GITHUB_OUTPUT
@@ -50,7 +50,7 @@ jobs:
             echo "PROJECT_ID=STG_PROJECT_ID" >> $GITHUB_OUTPUT
             echo "SLACK_WEBHOOK_URL=STG_SLACK_WEBHOOK_URL" >> $GITHUB_OUTPUT 
             echo "PUBLISH_COMMAND=release" >> $GITHUB_OUTPUT
-            echo "REPO=pencil-stg-bl-node-pkg-repo" >> $GITHUB_OUTPUT
+            echo "REPO=pencil-npm-packages" >> $GITHUB_OUTPUT
           else
             echo "Branch not configured!"
             exit 1
