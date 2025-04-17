@@ -106,9 +106,9 @@ jobs:
       - name: Create .npmrc
         run: |
           cat << EOF > .npmrc
-            @btg-pencil-ai:registry=https://europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/
-            //europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:always-auth=true
-            //europe-west1-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:_authToken="${{ steps.auth.outputs.access_token }}"
+            @btg-pencil-ai:registry=https://europe-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/
+            //europe-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:always-auth=true
+            //europe-npm.pkg.dev/${{ vars[env.PROJECT_ID] }}/${REPO}/:_authToken="${{ steps.auth.outputs.access_token }}"
           EOF
       - name: Artifact login and push package
         run: |
