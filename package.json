@@ -1,5 +1,5 @@
 {
-  "name": "@btg-pencil-ai/browser-asset-caching",
+  "name": "opfs-media-cache",
   "packageManager": "yarn@4.4.0",
   "version": "0.0.3",
   "type": "module",
